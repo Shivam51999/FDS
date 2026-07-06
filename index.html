@@ -124,13 +124,14 @@
     {code:6, label:"Genuine strategic input", short:"Strategic input", weight:0.3, color:"#2E7D5B"},
     {code:7, label:"Regular job / scheduled review", short:"Regular job", weight:0.2, color:"#5D7A99"},
   ];
+  const DEFAULT_SCRIPT_URL = "https://script.google.com/a/macros/mangalamlandmark.com/s/AKfycbwJ0pPf1Cbc5aV27Gy4m2yS7T3E-eZ6MD_Dyts7DWoQpcxVesYC-9shLtOOIiZf66PL_w/exec";
   const URL_KEY = "fdt-script-url";
   let entries = [];
   let scriptUrl = null;
   let connectionStatus = "unconfigured";
   let connectionError = "";
   let activeTab = "log";
-  let formState = { founder:"SSS", hod:HODS[0], duration:15, trigger:1, couldDecide:"unclear", urgency:"not-urgent" };
+  let formState = { founder:"SSS", hod:HODS[0], inTime:"", outTime:"", trigger:1, couldDecide:"unclear", urgency:"not-urgent", necessity:5, planned:"planned" };
   let dashFilter = { days: 90, founder: "all" };
 
   const root = document.getElementById("fdt-root");
@@ -164,8 +165,8 @@
   async function loadScriptUrlConfig(){
     try {
       const res = await window.storage.get(URL_KEY, true);
-      scriptUrl = res && res.value ? res.value : null;
-    } catch(e) { scriptUrl = null; }
+      scriptUrl = (res && res.value) ? res.value : DEFAULT_SCRIPT_URL;
+    } catch(e) { scriptUrl = DEFAULT_SCRIPT_URL; }
   }
   async function saveScriptUrlConfig(url){
     scriptUrl = url;
@@ -193,10 +194,13 @@
   function normalizeEntry(e){
     return {
       id: e.id, date: e.date, founder: e.founder, hod: e.hod,
+      inTime: e.inTime || "", outTime: e.outTime || "",
       durationMin: parseInt(e.durationMin) || 0,
       trigger: parseInt(e.trigger) || 6,
       couldDecide: e.couldDecide || "unclear",
       urgency: e.urgency || "not-urgent",
+      necessityRating: (e.necessityRating === "" || e.necessityRating == null) ? null : parseInt(e.necessityRating),
+      planned: e.planned || "planned",
       note: e.note || "",
       decisionTimeHours: (e.decisionTimeHours === "" || e.decisionTimeHours == null) ? null : parseFloat(e.decisionTimeHours),
       outcome: e.outcome || "pending",
@@ -245,29 +249,15 @@
     `;
     root.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => { activeTab = t.dataset.tab; render(); }));
     const content = document.getElementById('fdt-content');
-    if (connectionStatus !== 'connected' && activeTab !== 'settings') {
-      renderConnectionGate(content);
+    if (connectionStatus === 'error' && activeTab !== 'settings') {
+      content.innerHTML = `<div class="card"><h2><span class="n">⚠</span>Can't reach the Google Sheet</h2><div class="hint" style="margin-bottom:14px;">${escapeHtml(connectionError)}. The tracker still shows the connected URL — check that the Apps Script is deployed and permissions are set to "Anyone with the link".</div><button class="btn gold" id="goto-settings">Open Sheet Connection</button></div>`;
+      content.querySelector('#goto-settings').addEventListener('click', ()=>{ activeTab='settings'; render(); });
       return;
     }
     if (activeTab === 'log') renderLog(content);
     else if (activeTab === 'pending') renderPending(content);
     else if (activeTab === 'settings') renderSettings(content);
     else renderDashboard(content);
-  }
-
-  function renderConnectionGate(content){
-    content.innerHTML = `
-      <div class="card">
-        <h2><span class="n">·</span>Connect your Google Sheet first</h2>
-        <div class="hint" style="margin-bottom:14px;">
-          ${connectionStatus==='error'
-            ? 'Could not reach the sheet: ' + escapeHtml(connectionError) + '. Check the Web App URL in Sheet Connection.'
-            : 'This tracker reads and writes to a Google Sheet through a small Apps Script backend — same pattern as the rest of Mangalam HQ. Open the Sheet Connection tab to set it up.'}
-        </div>
-        <button class="btn gold" id="goto-settings">Go to Sheet Connection</button>
-      </div>
-    `;
-    content.querySelector('#goto-settings').addEventListener('click', ()=>{ activeTab='settings'; render(); });
   }
 
   function renderLog(content){
@@ -287,8 +277,13 @@
             <input type="date" id="f-date" value="${todayStr()}">
           </div>
           <div class="field">
-            <label>Duration (minutes)</label>
-            <input type="number" id="f-duration" min="1" value="${formState.duration}">
+            <label>In time — Out time</label>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <input type="time" id="f-in" value="${formState.inTime||''}">
+              <span style="color:var(--muted);">–</span>
+              <input type="time" id="f-out" value="${formState.outTime||''}">
+            </div>
+            <div class="hint" id="f-duration-hint">Time consumed: <strong id="f-duration-val">—</strong></div>
           </div>
         </div>
         <div class="field">
@@ -316,9 +311,23 @@
             </div>
           </div>
         </div>
+        <div class="grid2">
+          <div class="field">
+            <label>Was this meeting/interaction required? (1 = not needed, 10 = fully justified)</label>
+            <div class="radiorow" id="f-necessity">
+              ${[1,2,3,4,5,6,7,8,9,10].map(n=>`<div class="radiobtn ${formState.necessity===n?'sel':''}" data-val="${n}" style="min-width:30px;text-align:center;padding:8px 10px;">${n}</div>`).join('')}
+            </div>
+          </div>
+          <div class="field">
+            <label>Planned or ad-hoc</label>
+            <div class="radiorow" id="f-planned">
+              ${[["planned","Planned — on the calendar"],["unplanned","Ad-hoc — walked in / called"]].map(o=>`<div class="radiobtn ${formState.planned===o[0]?'sel':''}" data-val="${o[0]}">${o[1]}</div>`).join('')}
+            </div>
+          </div>
+        </div>
         <div class="field">
-          <label>Note (optional)</label>
-          <textarea id="f-note" rows="2" placeholder="One line on what this was about"></textarea>
+          <label>Decision &amp; remark <span style="color:var(--red);">— required</span></label>
+          <textarea id="f-note" rows="2" placeholder="What was decided, and what was this actually about? (used to spot the same issue recurring)"></textarea>
         </div>
         <button class="btn gold" id="f-submit">Save entry</button>
       </div>
@@ -332,16 +341,34 @@
     content.querySelectorAll('#f-trigger .radiobtn').forEach(b=>b.addEventListener('click', ()=>{ formState.trigger=parseInt(b.dataset.val); renderLog(content); }));
     content.querySelectorAll('#f-could .radiobtn').forEach(b=>b.addEventListener('click', ()=>{ formState.couldDecide=b.dataset.val; renderLog(content); }));
     content.querySelectorAll('#f-urgency .radiobtn').forEach(b=>b.addEventListener('click', ()=>{ formState.urgency=b.dataset.val; renderLog(content); }));
-    content.querySelector('#f-duration').addEventListener('change', e=>{ formState.duration = parseInt(e.target.value)||1; });
+    content.querySelectorAll('#f-necessity .radiobtn').forEach(b=>b.addEventListener('click', ()=>{ formState.necessity=parseInt(b.dataset.val); renderLog(content); }));
+    content.querySelectorAll('#f-planned .radiobtn').forEach(b=>b.addEventListener('click', ()=>{ formState.planned=b.dataset.val; renderLog(content); }));
+    function updateDurationPreview(){
+      const inV = content.querySelector('#f-in').value;
+      const outV = content.querySelector('#f-out').value;
+      const el = content.querySelector('#f-duration-val');
+      const mins = computeDurationMin(inV, outV);
+      formState.inTime = inV; formState.outTime = outV;
+      el.textContent = mins != null ? (mins + " min") : "—";
+    }
+    content.querySelector('#f-in').addEventListener('change', updateDurationPreview);
+    content.querySelector('#f-out').addEventListener('change', updateDurationPreview);
+    updateDurationPreview();
     content.querySelector('#f-submit').addEventListener('click', async ()=>{
       const btn = content.querySelector('#f-submit');
       const date = content.querySelector('#f-date').value || todayStr();
       const hod = content.querySelector('#f-hod').value;
-      const duration = parseInt(content.querySelector('#f-duration').value) || 1;
+      const inTime = content.querySelector('#f-in').value;
+      const outTime = content.querySelector('#f-out').value;
+      const duration = computeDurationMin(inTime, outTime);
       const note = content.querySelector('#f-note').value.trim();
+      if (!inTime || !outTime || duration == null) { showToast("Enter a valid In time and Out time"); return; }
+      if (!note) { showToast("Decision & remark is required"); content.querySelector('#f-note').focus(); return; }
       const entry = {
-        id: uid(), date, founder: formState.founder, hod, durationMin: duration,
+        id: uid(), date, founder: formState.founder, hod,
+        inTime, outTime, durationMin: duration,
         trigger: formState.trigger, couldDecide: formState.couldDecide, urgency: formState.urgency,
+        necessityRating: formState.necessity, planned: formState.planned,
         note, decisionTimeHours: '', outcome: (formState.urgency==='not-urgent' ? 'neutral' : 'pending'), valueBand: ''
       };
       btn.textContent = "Saving…"; btn.disabled = true;
@@ -350,7 +377,7 @@
         if (!res || !res.ok) throw new Error((res && res.error) || "Sheet rejected the entry");
         await refreshEntries();
         showToast("Entry saved to Google Sheet");
-        formState.duration = 15;
+        formState.inTime = ""; formState.outTime = ""; formState.necessity = 5; formState.planned = "planned";
         renderLog(content);
       } catch(e) {
         showToast("Could not save: " + e.message);
@@ -358,6 +385,16 @@
       }
     });
   }
+
+  function computeDurationMin(inV, outV){
+    if (!inV || !outV) return null;
+    const [ih, im] = inV.split(':').map(Number);
+    const [oh, om] = outV.split(':').map(Number);
+    let mins = (oh*60+om) - (ih*60+im);
+    if (mins < 0) mins += 24*60; // crossed midnight
+    return mins > 0 ? mins : null;
+  }
+
 
   function triggerHint(code){
     return ({
@@ -374,11 +411,14 @@
   function renderRecentTable(){
     const recent = entries.slice().sort((a,b)=> new Date(b.date)-new Date(a.date)).slice(0,10);
     if (!recent.length) return `<div class="empty">No entries yet — log the first one above.</div>`;
-    return `<table><thead><tr><th>Date</th><th>Founder</th><th>HOD</th><th>Min</th><th>Trigger</th><th>Could decide alone?</th><th>Outcome</th><th></th></tr></thead><tbody>
+    return `<table><thead><tr><th>Date</th><th>Founder</th><th>HOD</th><th>In–Out</th><th>Min</th><th>Trigger</th><th>Req'd</th><th>Plan</th><th>Decision &amp; remark</th><th>Outcome</th><th></th></tr></thead><tbody>
       ${recent.map(e=>`<tr>
-        <td>${e.date}</td><td>${e.founder}</td><td>${e.hod}</td><td>${e.durationMin}</td>
+        <td>${e.date}</td><td>${e.founder}</td><td>${e.hod}</td>
+        <td>${e.inTime||'—'}–${e.outTime||'—'}</td><td>${e.durationMin}</td>
         <td>${triggerByCode(e.trigger).short}</td>
-        <td>${e.couldDecide}</td>
+        <td>${e.necessityRating!=null ? e.necessityRating+'/10' : '—'}</td>
+        <td>${e.planned==='planned'?'Planned':'Ad-hoc'}</td>
+        <td style="max-width:220px;white-space:normal;">${escapeHtml(e.note||'')}</td>
         <td>${outcomePill(e.outcome)}</td>
         <td><span class="btn ghost small" data-del="${e.id}">Delete</span></td>
       </tr>`).join('')}
@@ -486,7 +526,7 @@
     if (!data.length) return;
 
     const body = content.querySelector('#dash-body');
-    body.innerHTML = renderKPIs(data) + renderHodTable(data) + renderHandholdMap(data) + renderDecisionSpeed(data);
+    body.innerHTML = renderKPIs(data) + renderHodTable(data) + renderHandholdMap(data) + renderRecurringIssues(data) + renderDecisionSpeed(data);
   }
 
   function renderKPIs(data){
@@ -511,35 +551,63 @@
 
   function groupByHod(data){
     const g = {};
-    HODS.forEach(h => g[h] = {totalMin:0, byTrigger:{}, could:{yes:0,no:0,unclear:0}, count:0});
+    HODS.forEach(h => g[h] = {totalMin:0, byTrigger:{}, could:{yes:0,no:0,unclear:0}, count:0, necessitySum:0, necessityCount:0, plannedCount:0, unplannedCount:0});
     data.forEach(e => {
-      if (!g[e.hod]) g[e.hod] = {totalMin:0, byTrigger:{}, could:{yes:0,no:0,unclear:0}, count:0};
+      if (!g[e.hod]) g[e.hod] = {totalMin:0, byTrigger:{}, could:{yes:0,no:0,unclear:0}, count:0, necessitySum:0, necessityCount:0, plannedCount:0, unplannedCount:0};
       g[e.hod].totalMin += e.durationMin;
       g[e.hod].byTrigger[e.trigger] = (g[e.hod].byTrigger[e.trigger]||0) + e.durationMin;
       g[e.hod].could[e.couldDecide] = (g[e.hod].could[e.couldDecide]||0) + 1;
       g[e.hod].count += 1;
+      if (e.necessityRating != null) { g[e.hod].necessitySum += e.necessityRating; g[e.hod].necessityCount += 1; }
+      if (e.planned === 'unplanned') g[e.hod].unplannedCount += 1; else g[e.hod].plannedCount += 1;
     });
     return g;
+  }
+
+  function computeEfficiency(v){
+    const avoidableRatio = v.count ? v.could.yes / v.count : 0;
+    const avgNecessity = v.necessityCount ? v.necessitySum / v.necessityCount : 7;
+    const unplannedRatio = v.count ? v.unplannedCount / v.count : 0;
+    const unhealthyMin = TRIGGERS.filter(t=>t.weight>=1.0).reduce((s,t)=> s + (v.byTrigger[t.code]||0), 0);
+    const unhealthyShare = v.totalMin ? unhealthyMin / v.totalMin : 0;
+    let score = 100
+      - (avoidableRatio * 40)
+      - (((10 - avgNecessity)/10) * 30)
+      - (unplannedRatio * 20)
+      - (unhealthyShare * 10);
+    return Math.max(0, Math.min(100, Math.round(score)));
   }
 
   function renderHodTable(data){
     const g = groupByHod(data);
     const rows = Object.entries(g).filter(([h,v])=>v.count>0).map(([hod,v])=>{
       const score = TRIGGERS.reduce((s,t)=> s + (v.byTrigger[t.code]||0)*t.weight, 0);
-      return {hod, ...v, score};
-    }).sort((a,b)=>b.score-a.score);
+      const efficiency = computeEfficiency(v);
+      const avgNecessity = v.necessityCount ? (v.necessitySum/v.necessityCount).toFixed(1) : '—';
+      const plannedPct = v.count ? Math.round(100*v.plannedCount/v.count) : 0;
+      return {hod, ...v, score, efficiency, avgNecessity, plannedPct};
+    }).sort((a,b)=>a.efficiency-b.efficiency);
     const maxScore = Math.max(...rows.map(r=>r.score), 1);
     return `<div class="card">
-      <h2><span class="n">·</span>Founder dependency by HOD</h2>
-      <table><thead><tr><th>HOD</th><th>Time</th><th>Bucket mix</th><th>Escalation-to-authority ratio</th><th>Dependency score</th></tr></thead><tbody>
+      <h2><span class="n">·</span>Founder dependency &amp; HOD efficiency</h2>
+      <div class="hint" style="margin-bottom:10px;">Efficiency blends the escalation-to-authority ratio, the founder's own necessity rating per meeting, how much was ad-hoc vs. planned, and the mix of "unhealthy" trigger types. Lower efficiency = more coaching needed; sorted worst first.</div>
+      <table><thead><tr><th>HOD</th><th>Time</th><th>Bucket mix</th><th>Avoidable</th><th>Avg. necessity</th><th>% Planned</th><th>Efficiency</th></tr></thead><tbody>
       ${rows.map(r=>{
         const ratio = Math.round(100*r.could.yes/(r.count));
+        const effColor = r.efficiency>=70 ? '#2E7D5B' : (r.efficiency>=45 ? '#B08D57' : '#EA1D24');
         return `<tr>
           <td><strong>${r.hod}</strong></td>
           <td>${(r.totalMin/60).toFixed(1)} hrs</td>
           <td style="min-width:140px;">${bucketBar(r.byTrigger)}</td>
-          <td>${ratio}% <span class="hint" style="display:inline;">avoidable</span></td>
-          <td style="min-width:120px;"><div class="barwrap"><div class="barfill" style="width:${Math.round(100*r.score/maxScore)}%;background:${ratio>40?'#EA1D24':(ratio>20?'#B08D57':'#2E7D5B')};"></div></div></td>
+          <td>${ratio}%</td>
+          <td>${r.avgNecessity}${r.avgNecessity!=='—'?'/10':''}</td>
+          <td>${r.plannedPct}%</td>
+          <td style="min-width:120px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div class="barwrap" style="flex:1;"><div class="barfill" style="width:${r.efficiency}%;background:${effColor};"></div></div>
+              <strong style="color:${effColor};min-width:28px;">${r.efficiency}</strong>
+            </div>
+          </td>
         </tr>`;
       }).join('')}
       </tbody></table>
@@ -607,6 +675,41 @@
     const mid = Math.floor(s.length/2);
     return s.length % 2 ? s[mid] : (s[mid-1]+s[mid])/2;
   }
+
+  function normalizeRemark(s){
+    return (s||"").toLowerCase().replace(/[^\w\s]/g,'').replace(/\s+/g,' ').trim();
+  }
+
+  function renderRecurringIssues(data){
+    const groups = {};
+    data.forEach(e => {
+      const key = normalizeRemark(e.note);
+      if (!key || key.length < 6) return; // skip empty/too-short remarks
+      const gkey = e.hod + '||' + key;
+      if (!groups[gkey]) groups[gkey] = { hod: e.hod, remark: e.note, count: 0, dates: [], totalMin: 0 };
+      groups[gkey].count += 1;
+      groups[gkey].dates.push(e.date);
+      groups[gkey].totalMin += e.durationMin;
+    });
+    const repeats = Object.values(groups).filter(g=>g.count>1).sort((a,b)=>b.count-a.count);
+    if (!repeats.length) {
+      return `<div class="card"><h2><span class="n">·</span>Recurring issues</h2><div class="hint">No exact-repeat remarks yet in this window — as the log fills up, the same issue phrased the same way across visits will surface here.</div></div>`;
+    }
+    return `<div class="card">
+      <h2><span class="n">·</span>Recurring issues — same thing keeps coming back to the founder</h2>
+      <div class="hint" style="margin-bottom:10px;">Grouped on near-identical decision remarks. A high count on one line means the underlying issue was never actually closed out.</div>
+      <table><thead><tr><th>HOD</th><th>Remark</th><th>Times raised</th><th>Total time</th><th>Dates</th></tr></thead><tbody>
+      ${repeats.slice(0,15).map(g=>`<tr>
+        <td><strong>${g.hod}</strong></td>
+        <td style="max-width:280px;white-space:normal;">${escapeHtml(g.remark)}</td>
+        <td><span class="pill loss">${g.count}×</span></td>
+        <td>${(g.totalMin/60).toFixed(1)} hrs</td>
+        <td class="hint">${g.dates.slice(0,5).join(', ')}${g.dates.length>5?'…':''}</td>
+      </tr>`).join('')}
+      </tbody></table>
+    </div>`;
+  }
+
 
   function renderDecisionSpeed(data){
     const withOutcome = data.filter(e=>e.urgency!=='not-urgent' && e.decisionTimeHours!=null && e.outcome!=='pending');

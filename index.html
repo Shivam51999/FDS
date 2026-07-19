@@ -542,7 +542,7 @@
     if (!data.length) return;
 
     const body = content.querySelector('#dash-body');
-    body.innerHTML = renderKPIs(data) + renderHodTable(data) + renderHandholdMap(data) + renderRecurringIssues(data) + renderDecisionSpeed(data);
+    body.innerHTML = renderScoreSection(data) + renderScoreTrend() + renderKPIs(data) + renderHodTable(data) + renderPathToIndependence(data) + renderHandholdMap(data) + renderRecurringIssues(data) + renderDecisionSpeed(data);
   }
 
   function renderKPIs(data){
@@ -593,6 +593,183 @@
       - (unhealthyShare * 10);
     return Math.max(0, Math.min(100, Math.round(score)));
   }
+
+  // ---------- Founder Independence Score ----------
+  function computeOverallScore(data){
+    if (!data.length) return null;
+    const totalMin = data.reduce((s,e)=>s+e.durationMin,0);
+    const couldYes = data.filter(e=>e.couldDecide==='yes');
+    const avoidableRatio = couldYes.length / data.length;
+    const avoidableMin = couldYes.reduce((s,e)=>s+e.durationMin,0);
+    const necessityVals = data.filter(e=>e.necessityRating!=null);
+    const avgNecessity = necessityVals.length ? necessityVals.reduce((s,e)=>s+e.necessityRating,0)/necessityVals.length : 7;
+    const unplannedCount = data.filter(e=>e.planned==='unplanned').length;
+    const unplannedRatio = unplannedCount / data.length;
+    const unhealthyMin = data.filter(e=>triggerByCode(e.trigger).weight>=1.0).reduce((s,e)=>s+e.durationMin,0);
+    const unhealthyShare = totalMin ? unhealthyMin/totalMin : 0;
+    const penalties = {
+      avoidable: avoidableRatio * 40,
+      necessity: ((10-avgNecessity)/10) * 30,
+      unplanned: unplannedRatio * 20,
+      unhealthy: unhealthyShare * 10,
+    };
+    const raw = 100 - penalties.avoidable - penalties.necessity - penalties.unplanned - penalties.unhealthy;
+    const score = Math.max(0, Math.min(100, Math.round(raw)));
+    return { score, totalMin, avoidableMin, avoidableRatio, avgNecessity, unplannedRatio, unhealthyShare, penalties, count: data.length };
+  }
+
+  function scoreLabel(score){
+    if (score>=75) return {text:"Independent", color:"#2E7D5B"};
+    if (score>=55) return {text:"Moderately dependent", color:"#B08D57"};
+    if (score>=35) return {text:"Highly dependent", color:"#EA1D24"};
+    return {text:"Critical dependency", color:"#8C2B26"};
+  }
+
+  function projectedScore(data){
+    // What-if: HODs actually own the calls they had authority for
+    const remaining = data.filter(e=>e.couldDecide!=='yes');
+    if (!remaining.length) return null;
+    return computeOverallScore(remaining);
+  }
+
+  function filteredEntriesByFounderAndRange(startTs, endTs){
+    return entries.filter(e=>{
+      const t = new Date(e.date).getTime();
+      if (isNaN(t) || t < startTs || t >= endTs) return false;
+      if (dashFilter.founder !== "all" && e.founder !== dashFilter.founder) return false;
+      return true;
+    });
+  }
+
+  function renderScoreSection(data){
+    const cur = computeOverallScore(data);
+    if (!cur) return '';
+    const lbl = scoreLabel(cur.score);
+    const proj = projectedScore(data);
+    const gain = proj ? proj.score - cur.score : 0;
+    const avoidHrs = (cur.avoidableMin/60).toFixed(1);
+    const totalHrs = (cur.totalMin/60).toFixed(1);
+
+    let deltaHtml = '';
+    if (dashFilter.days > 0) {
+      const days = dashFilter.days;
+      const cutoffNow = Date.now() - days*24*3600*1000;
+      const cutoffPrev = Date.now() - days*2*24*3600*1000;
+      const prev = computeOverallScore(filteredEntriesByFounderAndRange(cutoffPrev, cutoffNow));
+      if (prev) {
+        const delta = cur.score - prev.score;
+        const arrow = delta > 0 ? '▲' : (delta < 0 ? '▼' : '—');
+        const dcolor = delta > 0 ? '#2E7D5B' : (delta < 0 ? '#EA1D24' : 'var(--muted)');
+        deltaHtml = `<div class="hint" style="margin-top:8px;">${arrow} <strong style="color:${dcolor};">${delta>0?'+':''}${delta} pts</strong> vs. the previous ${days}-day period (was ${prev.score}).</div>`;
+      }
+    }
+
+    const rows = [
+      {label:"Escalations the HOD could've owned", val: Math.round(cur.avoidableRatio*100)+'%', pts: cur.penalties.avoidable},
+      {label:'Below-par meeting necessity', val: cur.avgNecessity.toFixed(1)+'/10', pts: cur.penalties.necessity},
+      {label:'Ad-hoc / unplanned share', val: Math.round(cur.unplannedRatio*100)+'%', pts: cur.penalties.unplanned},
+      {label:'Unhealthy trigger mix (risk-transfer, firefighting, conflict)', val: Math.round(cur.unhealthyShare*100)+'%', pts: cur.penalties.unhealthy},
+    ].sort((a,b)=>b.pts-a.pts);
+    const maxPts = Math.max(...rows.map(r=>r.pts), 1);
+
+    return `<div class="card">
+      <h2><span class="n">·</span>Founder Independence Score</h2>
+      <div class="hint" style="margin-bottom:14px;">100 = founder time is spent on genuinely founder-level work only. 0 = every logged minute was avoidable, ad-hoc, low-necessity, or firefighting. Computed from this window's entries.</div>
+      <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:center;">
+        <div style="text-align:center;min-width:150px;">
+          <div style="font-family:Cambria, Georgia, serif; font-size:52px; font-weight:700; color:${lbl.color};">${cur.score}</div>
+          <div class="pill" style="background:${lbl.color}22;color:${lbl.color};font-weight:700;">${lbl.text}</div>
+          ${deltaHtml}
+        </div>
+        <div style="flex:1;min-width:260px;">
+          ${rows.map(r=>`
+            <div style="margin-bottom:10px;">
+              <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px;">
+                <span>${r.label}</span><span style="color:var(--muted);">${r.val} · -${r.pts.toFixed(1)} pts</span>
+              </div>
+              <div class="barwrap"><div class="barfill" style="width:${Math.round(100*r.pts/maxPts)}%;background:var(--red);"></div></div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      <div class="hint" style="margin-top:14px;">
+        <strong>${avoidHrs} hrs</strong> of the <strong>${totalHrs} hrs</strong> logged this window were on escalations the HOD could have decided alone.
+        ${proj ? ` If those were pushed back to the HODs, the score would move from <strong>${cur.score}</strong> to an estimated <strong>${proj.score}</strong> (${gain>0?'+':''}${gain} pts).` : ''}
+      </div>
+    </div>`;
+  }
+
+  function monthKey(dateStr){ return (dateStr||'').slice(0,7); }
+
+  function renderScoreTrend(){
+    const founderFiltered = entries.filter(e=> dashFilter.founder==='all' || e.founder===dashFilter.founder);
+    if (!founderFiltered.length) return '';
+    const byMonth = {};
+    founderFiltered.forEach(e=>{
+      const k = monthKey(e.date);
+      if (!k) return;
+      if (!byMonth[k]) byMonth[k] = [];
+      byMonth[k].push(e);
+    });
+    const months = Object.keys(byMonth).sort();
+    if (months.length < 2) {
+      return `<div class="card"><h2><span class="n">·</span>Independence score over time</h2><div class="hint">Need at least two months of entries to plot a trend — keep logging and this will fill in.</div></div>`;
+    }
+    const points = months.map(m=>({month:m, score: computeOverallScore(byMonth[m]).score, count: byMonth[m].length}));
+    const W=640,H=220,PAD=44;
+    const xScale = i => PAD + (points.length===1?0:(i/(points.length-1))*(W-2*PAD));
+    const yScale = v => (H-PAD) - (v/100)*(H-2*PAD);
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;max-width:680px;display:block;margin:0 auto;">`;
+    [0,25,50,75,100].forEach(v=>{
+      svg += `<line x1="${PAD}" y1="${yScale(v)}" x2="${W-PAD}" y2="${yScale(v)}" stroke="#eee"/>`;
+      svg += `<text x="${PAD-8}" y="${yScale(v)+4}" class="axis-label" text-anchor="end">${v}</text>`;
+    });
+    const path = points.map((p,i)=>`${i===0?'M':'L'} ${xScale(i)} ${yScale(p.score)}`).join(' ');
+    svg += `<path d="${path}" fill="none" stroke="var(--red)" stroke-width="2.5"/>`;
+    points.forEach((p,i)=>{
+      svg += `<circle cx="${xScale(i)}" cy="${yScale(p.score)}" r="5" fill="#fff" stroke="var(--red)" stroke-width="2.5"><title>${p.month}: score ${p.score} (${p.count} entries)</title></circle>`;
+      svg += `<text x="${xScale(i)}" y="${H-PAD+18}" class="axis-label" text-anchor="middle">${p.month.slice(5)}/${p.month.slice(2,4)}</text>`;
+    });
+    svg += `</svg>`;
+    const first = points[0].score, last = points[points.length-1].score;
+    const trendDelta = last - first;
+    const trendMsg = trendDelta > 0 ? `up ${trendDelta} pts` : (trendDelta < 0 ? `down ${Math.abs(trendDelta)} pts` : 'flat');
+    const trendColor = trendDelta > 0 ? '#2E7D5B' : (trendDelta < 0 ? '#EA1D24' : 'var(--muted)');
+    return `<div class="card">
+      <h2><span class="n">·</span>Independence score over time</h2>
+      <div class="hint" style="margin-bottom:10px;">Monthly score across the full log, independent of the window filter above. Since ${points[0].month}: <strong style="color:${trendColor};">${trendMsg}</strong>.</div>
+      ${svg}
+    </div>`;
+  }
+
+  function renderPathToIndependence(data){
+    const g = groupByHod(data);
+    const rows = Object.entries(g).filter(([h,v])=>v.count>0).map(([hod,v])=>{
+      const efficiency = computeEfficiency(v);
+      const topTriggerEntry = Object.entries(v.byTrigger).sort((a,b)=>b[1]-a[1])[0];
+      return {hod, efficiency, totalMin:v.totalMin, count:v.count, topTrigger: topTriggerEntry ? parseInt(topTriggerEntry[0]) : null};
+    }).sort((a,b)=>a.efficiency-b.efficiency).slice(0,5);
+    if (!rows.length) return '';
+    return `<div class="card">
+      <h2><span class="n">·</span>Path to independence — where to focus first</h2>
+      <div class="hint" style="margin-bottom:10px;">Lowest-efficiency HODs this window, ranked by coaching priority. Fixing #1 moves the score most.</div>
+      <table><thead><tr><th>Priority</th><th>HOD</th><th>Efficiency</th><th>Time</th><th>Dominant issue</th><th>Suggested fix</th></tr></thead><tbody>
+      ${rows.map((r,i)=>{
+        const t = r.topTrigger!=null ? triggerByCode(r.topTrigger) : null;
+        const effColor = r.efficiency>=70 ? 'win' : (r.efficiency>=45 ? 'pending' : 'loss');
+        return `<tr>
+          <td><strong>#${i+1}</strong></td>
+          <td>${r.hod}</td>
+          <td><span class="pill ${effColor}">${r.efficiency}</span></td>
+          <td>${(r.totalMin/60).toFixed(1)} hrs</td>
+          <td>${t ? t.short : '—'}</td>
+          <td class="hint" style="max-width:260px;white-space:normal;margin:0;">${t ? triggerHint(r.topTrigger) : '—'}</td>
+        </tr>`;
+      }).join('')}
+      </tbody></table>
+    </div>`;
+  }
+  // ---------- /Founder Independence Score ----------
 
   function renderHodTable(data){
     const g = groupByHod(data);
